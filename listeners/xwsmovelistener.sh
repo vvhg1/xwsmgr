@@ -19,4 +19,4 @@ while true; do
     fi
     sleep 0.1
 done
-echo "xwsmovelistener.sh: exiting" >/tmp/xwsmgr_fifo
+echo "move_listener_exit" >/tmp/xwsmgr_fifo

@@ -43,4 +43,4 @@ xprop -spy -root _NET_CLIENT_LIST _NET_ACTIVE_WINDOW _NET_MOVERESIZE_WINDOW | wh
         ;;
     esac
 done
-echo "xwsxlistener.sh: exiting" >/tmp/xwsmgr_fifo
+echo "xprop_listener_exit" >/tmp/xwsmgr_fifo

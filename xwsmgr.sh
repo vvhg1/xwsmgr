@@ -121,6 +121,14 @@ check_initialized() {
         echo "Error: fifo_path not set"
         exit 1
     fi
+    if [ -z "$xprop_listener_pid" ]; then
+        echo "Error: xprop_listener_pid not set"
+        exit 1
+    fi
+    if [ -z "$move_listener_pid" ]; then
+        echo "Error: move_listener_pid not set"
+        exit 1
+    fi
 }
 
 ########################################################## helpers
@@ -626,17 +634,18 @@ active_monitor="${monitors[0]}"
 must_be_on_monitor_distance=0
 
 _initialize
-check_initialized
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # Start the listener in the background
-$script_dir/listeners/xwsxlistener.sh &
+# log errors to /tmp/xws_listener_errors.log
+$script_dir/listeners/xwsxlistener.sh 2>>/tmp/xws_xlistener_errors.log &
 xprop_listener_pid=$!
 echo "xprop_listener_pid: $xprop_listener_pid"
-$script_dir/listeners/xwsmovelistener.sh &
+$script_dir/listeners/xwsmovelistener.sh 2>>/tmp/xws_movelistener_errors.log &
 move_listener_pid=$!
 echo "move_listener_pid: $move_listener_pid"
 #changed from 0.5
 sleep 0.2
+check_initialized
 
 # * call with eg: echo "move_up" > /tmp/xwsmgr_fifo
 
@@ -677,6 +686,14 @@ while true; do
         fi
         position=$(echo "$wdw_id" | awk '{print $3,$4,$5,$6}')
         on_window_moved "$(wmctrl_to_xdotool $id)" "$position"
+        ;;
+    xprop_listener_exit)
+        echo "xprop_listener_exit"
+        break
+        ;;
+    move_listener_exit)
+        echo "move_listener_exit"
+        break
         ;;
     *)
         echo "Unknown message: $message"
