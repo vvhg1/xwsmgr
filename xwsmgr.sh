@@ -1,9 +1,7 @@
 #!/bin/bash
 
-# This script manages workspaces per monitor. It is intended to be used with mate-marco.
-
-# based on the content of this script, write a help entry below
 # xwsmgr.sh - manage workspaces per monitor
+
 # This script manages workspaces per monitor. It is intended to be used with mate-marco.
 # It requires wmctrl, xdotool, xprop, xrandr, and bc.
 # It also (probably) requires that the window manager is set to mate-marco, at least I haven't tested it with anything else.
@@ -70,15 +68,10 @@ _initialize() {
     # filter out gravity -1 windows
     windows_to_ignore=($(echo "$window_list" | grep " -1 " | cut -d' ' -f1))
     window_list=$(echo "$window_list" | grep -v " -1 ")
-    #convert the window_ids to xdotool format
-    for window_id in "${windows_to_ignore[@]}"; do
-        windows_to_ignore[$window_id]=$(wmctrl_to_xdotool "$window_id")
-    done
 
     local window_ids=($(echo "$window_list" | cut -d' ' -f1))
     start_time=$(date +%s.%N)
     for window_id in "${window_ids[@]}"; do
-        window_id=$(wmctrl_to_xdotool "$window_id")
         local monitor_and_workspace=$(get_monitor_for_window "$window_id")
         local monitor=$(echo "$monitor_and_workspace" | cut -d: -f1)
         local workspace=$(echo "$monitor_and_workspace" | cut -d: -f2)
@@ -133,15 +126,31 @@ check_initialized() {
 
 ########################################################## helpers
 
+xdotool_to_wmctrl() {
+    xdotool_id=$1
+    # clean up the window id of whitespace
+    xdotool_id=$(echo "$xdotool_id" | xargs)
+    hex_window_id=$(printf "0x%08x\n" "$xdotool_id")
+    echo "$hex_window_id"
+}
+
 wmctrl_to_xdotool() {
     local wmctrl_id=$1
     printf "%d\n" "$((wmctrl_id))"
 }
 
-xdotool_to_wmctrl() {
-    local xdotool_id=$1
-    local hex_window_id=$(printf "%08x\n" "$xdotool_id")
-    echo "$hex_window_id"
+check_fix_id_format() {
+    local window_id=$1
+    window_id=$(echo "$window_id" | xargs)
+    if [[ ! "$window_id" =~ ^0x ]]; then
+        echo "0"
+    fi
+    length=${#window_id}
+    while [ "$length" -lt 10 ]; do
+        window_id=$(echo "$window_id" | sed 's/^0x/0x0/')
+        length=${#window_id}
+    done
+    echo "$window_id"
 }
 
 is_window_to_ignore() {
@@ -156,7 +165,6 @@ is_window_to_ignore() {
 
 is_window_gravity_minus_one() {
     local window_id=$1
-    window_id=$(xdotool_to_wmctrl "$window_id")
     local window_details=$(wmctrl -lG | grep "$window_id" | grep " -1 ")
     if [[ -z "$window_details" ]]; then
         return 0
@@ -165,8 +173,7 @@ is_window_gravity_minus_one() {
 }
 
 is_empty_window() {
-    local hex_window_id=$(xdotool_to_wmctrl "$1")
-    local window_details=$(wmctrl -lG | grep "$hex_window_id")
+    local window_details=$(wmctrl -lG | grep "$1")
     if [[ -z "$window_details" ]]; then
         return 0
     fi
@@ -176,7 +183,7 @@ is_empty_window() {
 is_window_in_windows_array() {
     local current_window_id=$1
     for i in "${!windows[@]}"; do
-        if [[ " ${windows[$i]} " =~ " $current_window_id" ]]; then
+        if [[ " ${windows[$i]} " =~ "$current_window_id" ]]; then
             return 0
         fi
     done
@@ -212,6 +219,7 @@ move_window_to_ws_by_direction() {
     # if the current workspace is the last workspace, then move the window to the first workspace
     local direction=$1
     local current_window_id=$(xdotool getwindowfocus)
+    current_window_id=$(xdotool_to_wmctrl "$current_window_id")
     local current_monitor=$(get_monitor_for_window "$current_window_id" | cut -d: -f1)
     local current_workspace="${active_workspaces["$current_monitor"]}"
 
@@ -270,6 +278,7 @@ move_window_to_monitor_workspace() {
         return
     fi
     local current_window_id=$(xdotool getwindowfocus)
+    current_window_id=$(xdotool_to_wmctrl "$current_window_id")
     local previous_monitor=$(get_active_monitor)
     local previous_workspace="${active_workspaces["$previous_monitor"]}"
 
@@ -319,9 +328,7 @@ on_focus_changed() {
         return
     fi
     local current_window_id=$1
-    #get window details from wmctrl
-    # local window_details_from_wmctrl=$(wmctrl -lGx | grep "$(xdotool_to_wmctrl "$current_window_id")")
-    # echo "on_focus_changed, window_details_from_wmctrl for window $current_window_id: $window_details_from_wmctrl"
+    current_window_id=$(echo "$current_window_id" | xargs)
     if is_window_to_ignore "$current_window_id"; then
         # echo "on focus changed, window to ignore"
         return
@@ -332,12 +339,13 @@ on_focus_changed() {
     fi
     if ! is_window_in_windows_array "$current_window_id"; then
         # get window details
-        local window_details_from_wmctrl=$(wmctrl -lGx | grep "$(xdotool_to_wmctrl "$current_window_id")")
+        local window_details_from_wmctrl=$(wmctrl -lGx | grep "$current_window_id")
         echo "on_window_focus_change, window not in windows array, BUG? window details_from_wmctrl: $window_details_from_wmctrl"
         return
     fi
     # with xdotool, check if the window really has focus
     local focused_window=$(xdotool getwindowfocus)
+    focused_window=$(xdotool_to_wmctrl "$focused_window")
     if [ "$focused_window" != "$current_window_id" ]; then
         echo "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXon_focus_changed, window does not have focus, BUG?"
         return
@@ -427,6 +435,7 @@ on_window_removed() {
 switch_workspace_up_down() {
     # * this function is called when the user presses a key to switch to a workspace
     echo "switch_workspace_up_down"
+    local direction=$1
     local current_monitor=$(get_active_monitor)
     local current_workspace=$(get_active_workspace $current_monitor)
     local workspace_count=$(echo "${workspaces[$current_monitor]}" | wc -w)
@@ -520,6 +529,14 @@ switch_to_monitor_workspace() {
     echo "switch_to_monitor_workspace, previous: $active_monitor _${active_workspaces["$active_monitor"]} new monitor_workspace: $monitor _$workspace"
     local current_workspace=$(get_active_workspace $active_monitor)
     allow_focus_change=false
+    # get the window count for the current workspace
+    local window_count=$(echo "${windows["$monitor"_"$workspace"]}" | wc -w)
+    # if window count is 0, then remove the workspace
+    if [ "$window_count" -eq 0 ]; then
+        remove_empty_workspace
+        allow_focus_change=true
+        return
+    fi
     if [ "$monitor" == "$active_monitor" ]; then
         if [ "$workspace" == "$current_workspace" ]; then
             allow_focus_change=true
@@ -529,23 +546,27 @@ switch_to_monitor_workspace() {
             previous_workspace=$(get_active_workspace $monitor)
             previous_windows=$(echo "${windows["$monitor"_"$previous_workspace"]}")
             for window in $previous_windows; do
-                xdotool windowminimize $window
+                xdotool windowminimize $(wmctrl_to_xdotool $window)
             done
             #activate the new workspace windows on the monitor
             current_windows=$(echo "${windows["$monitor"_"$workspace"]}")
+            local last_window=$(echo "${current_windows}" | awk '{print $NF}')
+            # focus on the $last_window not sure if this is an improvement
+            wmctrl -i -a $last_window -b add,above
             for window in $current_windows; do
-                #TODO find a way to activate the window without giving it focus
-                xdotool windowactivate $window
+                #TODO find a way to activate the window without giving it fovcus
+                wmctrl -i -a $window
             done
+            wmctrl -i -a $last_window -b remove,above
         fi
     else
         active_monitor=$monitor
         # activate the last window in the windows array
         local last_window=$(echo "${windows["$monitor"_"$workspace"]}" | awk '{print $NF}')
-        xdotool windowactivate $last_window
+        wmctrl -i -a $last_window
     fi
     active_workspaces["$active_monitor"]=$workspace
-
+    #TODO not sure if this is needed
     sleep 0.1
     allow_focus_change=true
 }
@@ -557,8 +578,11 @@ get_monitor_for_window() {
     center_y=0
     # if the second argument is not passed
     if [ -z "$2" ]; then
-        geometry=$(xdotool getwindowgeometry --shell $window_id)
-        eval "$geometry"
+        geometry=$(wmctrl -lG | grep $window_id | awk '{print $3" "$4" "$5" "$6" "$7}')
+        X=$(echo "$geometry" | cut -d' ' -f1)
+        Y=$(echo "$geometry" | cut -d' ' -f2)
+        WIDTH=$(echo "$geometry" | cut -d' ' -f3)
+        HEIGHT=$(echo "$geometry" | cut -d' ' -f4)
         center_x=$(($X + $WIDTH / 2))
         center_y=$(($Y + $HEIGHT / 2))
     else
@@ -586,6 +610,17 @@ get_monitor_for_window() {
     done
     current_workspace=$(get_active_workspace $closest_monitor)
     echo "$closest_monitor:$current_workspace"
+}
+switch_to_monitor_by_index() {
+    local monitor_index=$1
+    local monitor=$(echo "${monitors[@]}" | cut -d' ' -f$monitor_index)
+    # if the monitor is not found, do nothing
+    if [ -z "$monitor" ]; then
+        echo "monitor not found, doing nothing"
+        return
+    fi
+    workspace=$(get_active_workspace $monitor)
+    switch_to_monitor_workspace $monitor $workspace
 }
 
 switch_to_monitor_workspace_by_index() {
@@ -654,6 +689,9 @@ while true; do
     read message <"$fifo_path"
     wdw_id=$(echo "$message" | cut -d: -f2)
     case "$message" in
+    switch_to_index_monitor*)
+        switch_to_monitor_by_index "$wdw_id"
+        ;;
     switch_to_monitor_workspace*)
         switch_to_monitor_workspace_by_index "$wdw_id"
         ;;
@@ -670,22 +708,34 @@ while true; do
         move_window_to_ws_by_direction "down"
         ;;
     focus_change*)
-        echo "focus change"
-        on_focus_changed "$(wmctrl_to_xdotool "$wdw_id")"
+        wd_id=$(check_fix_id_format "$wdw_id")
+        if [ "$wd_id" == "0" ]; then
+            continue
+        fi
+        on_focus_changed "$wd_id"
         ;;
     window_removed*)
-        on_window_removed "$(wmctrl_to_xdotool "$wdw_id")"
+        wd_id=$(check_fix_id_format "$wdw_id")
+        if [ "$wd_id" == "0" ]; then
+            continue
+        fi
+        on_window_removed "$wd_id"
         ;;
     window_added*)
-        on_window_added "$(wmctrl_to_xdotool "$wdw_id")"
+        wd_id=$(check_fix_id_format "$wdw_id")
+        if [ "$wd_id" == "0" ]; then
+            continue
+        fi
+        on_window_added "$wd_id"
         ;;
     window_moved*)
         id=$(echo "$wdw_id" | awk '{print $1}')
-        if [ -z "$id" ]; then
+        id=$(check_fix_id_format "$id")
+        if [ "$id" == "0" ]; then
             continue
         fi
         position=$(echo "$wdw_id" | awk '{print $3,$4,$5,$6}')
-        on_window_moved "$(wmctrl_to_xdotool $id)" "$position"
+        on_window_moved "$id" "$position"
         ;;
     xprop_listener_exit)
         echo "xprop_listener_exit"

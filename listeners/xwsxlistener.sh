@@ -10,7 +10,7 @@ last_focused_window=""
 xprop -spy -root _NET_CLIENT_LIST _NET_ACTIVE_WINDOW _NET_MOVERESIZE_WINDOW | while read -r line; do
     case "${line}" in
     # window list changed
-    *_NET_CLIENT_LIST*) #TODO this is working
+    *_NET_CLIENT_LIST*)
         wids=$(echo $line | cut -d' ' -f 5- | sed 's/,/ /g')
         if [ "$wids" = "$last_window_list" ]; then
             continue

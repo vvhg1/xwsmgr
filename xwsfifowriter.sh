@@ -27,6 +27,9 @@ case "$1" in
 switch_to_monitor_workspace*)
     echo $@ >/tmp/xwsmgr_fifo
     ;;
+switch_to_index_monitor*)
+    echo $@ >/tmp/xwsmgr_fifo
+    ;;
     # that's all folks
 *) ;;
 esac
