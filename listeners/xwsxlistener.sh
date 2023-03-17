@@ -4,6 +4,7 @@
 # This script listens for window events and writes them to the xwsmgr fifo
 # This script is called by xwsmgr.sh
 
+fifo="/tmp/xwsmgr_fifo"
 last_window_list=""
 last_focused_window=""
 
@@ -21,9 +22,9 @@ xprop -spy -root _NET_CLIENT_LIST _NET_ACTIVE_WINDOW _NET_MOVERESIZE_WINDOW | wh
             difference=($(echo ${new_arr[@]} ${old_arr[@]} | tr ' ' '\n' | sort | uniq -u))
             for i in "${difference[@]}"; do
                 if [[ " ${old_arr[@]} " =~ " ${i} " ]]; then
-                    echo "window_removed: $i" >/tmp/xwsmgr_fifo
+                    flock $fifo echo "window_removed: $i" >$fifo
                 else
-                    echo "window_added: $i" >/tmp/xwsmgr_fifo
+                    flock $fifo echo "window_added: $i" >$fifo
                 fi
             done
         fi
@@ -35,7 +36,7 @@ xprop -spy -root _NET_CLIENT_LIST _NET_ACTIVE_WINDOW _NET_MOVERESIZE_WINDOW | wh
             continue
         else
             last_focused_window=$wid
-            echo "focus_change: $wid" >/tmp/xwsmgr_fifo
+            flock $fifo echo "focus_change: $wid" >$fifo
         fi
         ;;
     *)
@@ -43,4 +44,4 @@ xprop -spy -root _NET_CLIENT_LIST _NET_ACTIVE_WINDOW _NET_MOVERESIZE_WINDOW | wh
         ;;
     esac
 done
-echo "xprop_listener_exit" >/tmp/xwsmgr_fifo
+flock $fifo echo "xprop_listener_exit" >$fifo

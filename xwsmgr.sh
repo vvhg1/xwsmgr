@@ -142,15 +142,19 @@ wmctrl_to_xdotool() {
 check_fix_id_format() {
     local window_id=$1
     window_id=$(echo "$window_id" | xargs)
-    if [[ ! "$window_id" =~ ^0x ]]; then
+    # make sure the window id is not empty
+    if [[ -z "$window_id" ]]; then
         echo "0"
-    fi
-    length=${#window_id}
-    while [ "$length" -lt 10 ]; do
-        window_id=$(echo "$window_id" | sed 's/^0x/0x0/')
+    elif [[ "$window_id" != "0x"* ]]; then
+        echo "0"
+    else
         length=${#window_id}
-    done
-    echo "$window_id"
+        while [ "$length" -lt 10 ]; do
+            window_id=$(echo "$window_id" | sed 's/^0x/0x0/')
+            length=${#window_id}
+        done
+        echo "$window_id"
+    fi
 }
 
 is_window_to_ignore() {
@@ -296,6 +300,21 @@ move_window_to_monitor_workspace() {
     remove_empty_workspace
 }
 
+switch_to_next_window_on_ws() {
+    # * Switch to the next window on the current workspace
+    local current_monitor=$(get_active_monitor)
+    local current_workspace="${active_workspaces["$current_monitor"]}"
+    #return if there is only one window on the current workspace
+    if [ $(echo "${windows["$current_monitor"_"$current_workspace"]}" | wc -w) -lt 2 ]; then
+        return
+    fi
+    # get the first window in the windows array of the current workspace
+    local first_window_id=$(echo "${windows["$current_monitor"_"$current_workspace"]}" | awk '{print $1}')
+    windows["$current_monitor"_"$current_workspace"]=$(echo "${windows["$current_monitor"_"$current_workspace"]}" | sed "s/ $first_window_id//")
+    windows["$current_monitor"_"$current_workspace"]+=" $first_window_id"
+    wmctrl -i -a "$first_window_id"
+}
+
 on_window_moved() {
     # * Update the windows array and the active workspace when a window is moved
     echo "on_window_moved"
@@ -341,7 +360,13 @@ on_focus_changed() {
         # get window details
         local window_details_from_wmctrl=$(wmctrl -lGx | grep "$current_window_id")
         echo "on_window_focus_change, window not in windows array, BUG? window details_from_wmctrl: $window_details_from_wmctrl"
-        return
+        # add the window to the windows array if it exists
+        if [ -n "$window_details_from_wmctrl" ]; then
+            local current_monitor_and_workspace=$(get_monitor_for_window "$current_window_id")
+            local current_monitor=$(echo "$current_monitor_and_workspace" | cut -d: -f1)
+            local current_workspace=$(echo "$current_monitor_and_workspace" | cut -d: -f2)
+            windows["$current_monitor"_"$current_workspace"]+=" $current_window_id"
+        fi
     fi
     # with xdotool, check if the window really has focus
     local focused_window=$(xdotool getwindowfocus)
@@ -466,6 +491,8 @@ switch_workspace_up_down() {
 
 remove_empty_workspace() {
     # * this function is called when a window is closed or moved to another workspace, seems to work now
+    local focused_window_id=$(xdotool getactivewindow)
+    local focused_window_id_hex=$(xdotool_to_wmctrl "$focused_window_id")
     echo "remove_empty_workspace"
     for monitor_workspace in $(echo "${workspaces[@]}"); do
         # if empty or only contains whitespace of any length
@@ -504,22 +531,23 @@ remove_empty_workspace() {
             done
             workspaces["$monitor"]=$(echo "${workspaces_array[@]}" | sed 's/ / /g')
             # if the removed workspace is the active workspace, then switch to a different workspace
+            local new_workspace
             if [ "${active_workspaces["$monitor"]}" == "$workspace" ]; then
                 if [ "$workspace" -gt 1 ]; then
                     # echo "workspace is larger than 1, setting previous to the one below workspace"
                     active_workspaces["$monitor"]=$workspace
-                    switch_to_monitor_workspace $monitor $(($workspace - 1))
+                    new_workspace=$(($workspace - 1))
                 else
                     # echo "workspace is 1, setting previous to the one above workspace"
                     active_workspaces["$monitor"]=$($workspace + 1)
-                    switch_to_monitor_workspace $monitor 1
+                    new_workspace=1
                 fi
             fi
-            # echo "from remove_empty_workspace, switching to monitor $monitor, workspace $(get_active_workspace $monitor)"
-            switch_to_monitor_workspace $monitor $(get_active_workspace $monitor)
+            switch_to_monitor_workspace $monitor $new_workspace
             break
         fi
     done
+    wmctrl -i -a $focused_window_id_hex
 }
 
 switch_to_monitor_workspace() {
@@ -547,6 +575,13 @@ switch_to_monitor_workspace() {
             previous_windows=$(echo "${windows["$monitor"_"$previous_workspace"]}")
             for window in $previous_windows; do
                 xdotool windowminimize $(wmctrl_to_xdotool $window)
+                if [ "$?" -ne 0 ]; then
+                    # check if the window still exists
+                    if [ -z "$(wmctrl -l | grep $window)" ]; then
+                        windows["$monitor"_"$previous_workspace"]=$(echo "${windows["$monitor"_"$previous_workspace"]}" | sed "s/$window//g")
+                        remove_empty_workspace
+                    fi
+                fi
             done
             #activate the new workspace windows on the monitor
             current_windows=$(echo "${windows["$monitor"_"$workspace"]}")
@@ -579,6 +614,11 @@ get_monitor_for_window() {
     # if the second argument is not passed
     if [ -z "$2" ]; then
         geometry=$(wmctrl -lG | grep $window_id | awk '{print $3" "$4" "$5" "$6" "$7}')
+        # if the window is not found, then return
+        if [ -z "$geometry" ]; then
+            echo "window_not_found"
+            return
+        fi
         X=$(echo "$geometry" | cut -d' ' -f1)
         Y=$(echo "$geometry" | cut -d' ' -f2)
         WIDTH=$(echo "$geometry" | cut -d' ' -f3)
@@ -644,6 +684,37 @@ switch_to_monitor_workspace_by_index() {
     switch_to_monitor_workspace $monitor $workspace_index
 }
 
+update_arrays() {
+    for monitor_workspace in $(echo "${workspaces[@]}"); do
+        for window in $(echo "${windows["$monitor_workspace"]}"); do
+            current_monitor=$(echo "$monitor_workspace" | cut -d_ -f1)
+            monitor_workspace_for_window=$(get_monitor_for_window $window)
+            monitor_for_window=$(echo "$monitor_workspace_for_window" | cut -d: -f1)
+            # if the monitor_for_window is not the same as the monitor_workspace
+            if [ "$monitor_for_window" != "$current_monitor" ]; then
+                echo "found window that is not on the correct monitor_workspace"
+                echo "old monitor for window: $current_monitor"
+                echo "new monitor_for_window: $monitor_for_window"
+                # remove the window from the monitor_workspace
+                windows["$monitor_workspace"]=$(echo "${windows["$monitor_workspace"]}" | sed "s/$window//g")
+                if [ "$monitor_workspace_for_window" != "window_not_found" ]; then
+                    # check if the window already exists in the monitor_for_window
+                    if [[ ! " ${windows["$monitor_for_window"]} " =~ " ${window} " ]]; then
+                        echo "adding window to monitor_workspace_for_window"
+                        echo "windows[monitor_for_window]}: ${windows["$monitor_for_window"]}"
+                        windows["$monitor_workspace_for_window"]="${windows["$monitor_workspace_for_window"]} $window"
+                    else
+                        echo "window already in monitor_for_window, so we had a duplicate window"
+                    fi
+                else
+                    echo "window not found"
+                fi
+                remove_empty_workspaces
+            fi
+        done
+    done
+}
+
 ################################################################# core script
 
 # check that we don't already have a running instance
@@ -672,10 +743,10 @@ _initialize
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 # Start the listener in the background
 # log errors to /tmp/xws_listener_errors.log
-$script_dir/listeners/xwsxlistener.sh 2>>/tmp/xws_xlistener_errors.log &
+$script_dir/listeners/xwsxlistener.sh &
 xprop_listener_pid=$!
 echo "xprop_listener_pid: $xprop_listener_pid"
-$script_dir/listeners/xwsmovelistener.sh 2>>/tmp/xws_movelistener_errors.log &
+$script_dir/listeners/xwsmovelistener.sh &
 move_listener_pid=$!
 echo "move_listener_pid: $move_listener_pid"
 #changed from 0.5
@@ -689,6 +760,9 @@ while true; do
     read message <"$fifo_path"
     wdw_id=$(echo "$message" | cut -d: -f2)
     case "$message" in
+    switch_to_next_window)
+        switch_to_next_window_on_ws
+        ;;
     switch_to_index_monitor*)
         switch_to_monitor_by_index "$wdw_id"
         ;;
@@ -737,13 +811,16 @@ while true; do
         position=$(echo "$wdw_id" | awk '{print $3,$4,$5,$6}')
         on_window_moved "$id" "$position"
         ;;
+    update_arrays)
+        update_arrays
+        ;;
     xprop_listener_exit)
         echo "xprop_listener_exit"
-        break
+        break 2
         ;;
     move_listener_exit)
         echo "move_listener_exit"
-        break
+        break 2
         ;;
     *)
         echo "Unknown message: $message"
